@@ -156,12 +156,17 @@ python3 web_dashboard.py \
 ```text
 [main] START repo=/code/project db=/data/mirrorsec.sqlite3 history_capability=medium similar_capability=high
 [history] START repo=/code/project concurrency=4
+[opencode] SESSION_CREATED session_id=ses_abc123
+[opencode] SESSION_COMPLETED session_id=ses_abc123
 [similar] START issue=2f37d93a84ab#1
 [similar] DONE issue=2f37d93a84ab#1 findings=2
 [history] DONE analyzed=120 failed=0 issues_saved=6
 [similar] DONE scheduled=6 completed=6 failed=0 findings_saved=3
 [main] DONE
 ```
+
+OpenCode 过程日志只显示 Session 的新建、完成、失败和重试，Tool、模型输出、
+Serve 状态及其它内部事件不会打印。
 
 单个同类问题排查失败不会被标记为完成。失败和程序中断的任务会在下次运行时重试。
 

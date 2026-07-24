@@ -369,6 +369,31 @@ class OpenCodeTaskService:
         return (
             cls._validation_debug_enabled(record)
             or metadata.get("standalone_console") is True
+            or metadata.get("session_lifecycle_console") is True
+        )
+
+    @staticmethod
+    def _session_lifecycle_enabled(record: _TaskRecord) -> bool:
+        return (
+            record.execution_context.task_metadata.get("session_lifecycle_console")
+            is True
+        )
+
+    @classmethod
+    def _emit_session_lifecycle(
+        cls,
+        record: _TaskRecord,
+        message: str,
+        *,
+        session_id: str,
+    ) -> None:
+        if not cls._session_lifecycle_enabled(record) or not session_id:
+            return
+        cls._emit_task_progress(
+            record,
+            message,
+            session_id=session_id,
+            category="session",
         )
 
     @classmethod
@@ -657,6 +682,7 @@ class OpenCodeTaskService:
 
                 async def record_session(value: str) -> None:
                     nonlocal session_id, final_session_id
+                    previous_session_id = session_id
                     session_id = str(value or "").strip()
                     final_session_id = session_id
                     if not session_id or runtime is None:
@@ -675,6 +701,12 @@ class OpenCodeTaskService:
                         "serve_session_id": session_id,
                         "session_attempt": session_attempt,
                     })
+                    if not previous_session_id:
+                        self._emit_session_lifecycle(
+                            record,
+                            "CREATED",
+                            session_id=session_id,
+                        )
 
                 def record_model(value: str) -> None:
                     if value:
@@ -754,6 +786,11 @@ class OpenCodeTaskService:
                     if attempt_started
                     else 0.0
                 )
+                self._emit_session_lifecycle(
+                    record,
+                    "COMPLETED",
+                    session_id=session_id,
+                )
                 self._finish_record(
                     record,
                     status="success",
@@ -780,6 +817,11 @@ class OpenCodeTaskService:
                     return
                 attempt_outcome = "cancelled"
                 last_source = source
+                self._emit_session_lifecycle(
+                    record,
+                    "FAILED status=cancelled",
+                    session_id=session_id,
+                )
                 self._finish_record(
                     record,
                     status="cancelled",
@@ -851,6 +893,13 @@ class OpenCodeTaskService:
                     outcome=attempt_outcome if terminal_release else None,
                     duration_seconds=attempt_duration if lease is not None else None,
                     record_completion=terminal_release,
+                )
+
+            if retry_reason:
+                self._emit_session_lifecycle(
+                    record,
+                    f"FAILED status={attempt_outcome}",
+                    session_id=session_id,
                 )
 
             if retry_reason and session_attempt < total_session_attempts:

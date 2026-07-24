@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import sqlite3
 import subprocess
 import tempfile
@@ -22,6 +23,65 @@ from task_agent.standalone import ensure_opencode_configuration
 
 _CAPABILITIES = ("low", "medium", "high")
 _POLL_INTERVAL_SECONDS = 0.5
+_SESSION_OUTPUT_RE = re.compile(
+    r"^\[[^\]\r\n]+\]\[(?P<session_id>[^\]\r\n]+)\]\[session\]\s+"
+    r"(?P<message>.*)$"
+)
+_SESSION_RETRY_RE = re.compile(
+    r"^(?:JSON_)?RETRY(?:\s+(?P<count>\d+/\d+))?(?:\s|$)"
+)
+
+
+def _print_opencode_session_lifecycle(line: str) -> None:
+    """Print only the OpenCode Session lifecycle events useful to operators."""
+    match = _SESSION_OUTPUT_RE.match(str(line or ""))
+    if match is None:
+        return
+
+    session_id = match.group("session_id")
+    message = match.group("message")
+    if message == "CREATED":
+        print(
+            f"[opencode] SESSION_CREATED session_id={session_id}",
+            flush=True,
+        )
+        return
+
+    if message == "COMPLETED":
+        print(
+            f"[opencode] SESSION_COMPLETED session_id={session_id}",
+            flush=True,
+        )
+        return
+
+    failed = re.match(r"^FAILED status=(?P<status>\S+)", message)
+    if failed is not None:
+        print(
+            f"[opencode] SESSION_FAILED session_id={session_id} "
+            f"status={failed.group('status')}",
+            flush=True,
+        )
+        return
+
+    retry = _SESSION_RETRY_RE.match(message)
+    retry_count = retry.group("count") if retry is not None else None
+    if retry is None:
+        retry = re.match(r"^RETRYING(?:\s|$)", message)
+    if retry is None:
+        return
+    details: list[str] = []
+    if retry_count:
+        details.append(f"attempt={retry_count}")
+    for field in ("attempt", "next_session", "next"):
+        value = re.search(rf"(?:^|\s){field}=(\S+)", message)
+        detail = f"{field}={value.group(1)}" if value is not None else ""
+        if detail and detail not in details:
+            details.append(detail)
+    suffix = f" {' '.join(details)}" if details else ""
+    print(
+        f"[opencode] SESSION_RETRYING session_id={session_id}{suffix}",
+        flush=True,
+    )
 
 
 @dataclass(frozen=True)
@@ -705,6 +765,8 @@ async def _run(args: argparse.Namespace) -> int:
             project_dir=repo_path,
             work_dir=work_dir,
             config_path=args.config_path,
+            task_metadata={"session_lifecycle_console": True},
+            output=_print_opencode_session_lifecycle,
         ):
             with _use_requested_model_capabilities(
                 history_capability=args.history_capability,
