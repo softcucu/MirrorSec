@@ -292,6 +292,20 @@ class DashboardHTTPTests(unittest.TestCase):
                     self.assertEqual(response.status, 200)
                     self.assertIn("Git 历史问题", html)
                     self.assertIn("问题排查结果", html)
+                    self.assertIn("立即刷新", html)
+
+                with opener.open(
+                    f"{dashboard.url}/app.js",
+                    timeout=3,
+                ) as response:
+                    javascript = response.read().decode("utf-8")
+                    self.assertEqual(response.status, 200)
+                    self.assertNotIn("setInterval", javascript)
+                    self.assertNotIn('"visibilitychange"', javascript)
+                    self.assertIn(
+                        'elements.refreshButton.addEventListener("click"',
+                        javascript,
+                    )
 
                 with opener.open(
                     f"{dashboard.url}/api/summary",

@@ -1,7 +1,5 @@
 "use strict";
 
-const POLL_INTERVAL_MS = 2000;
-
 const state = {
   activeTab: window.location.hash === "#findings" ? "findings" : "history",
   page: { history: 1, findings: 1 },
@@ -12,7 +10,6 @@ const state = {
   records: null,
   controller: null,
   requestNumber: 0,
-  pollTimer: null,
   toastTimer: null,
 };
 
@@ -140,7 +137,7 @@ function setConnection(status, detail) {
     elements.refreshTime.textContent = detail || "刚刚同步";
   } else if (status === "offline") {
     elements.connectionLabel.textContent = "数据库连接中断";
-    elements.refreshTime.textContent = detail || "稍后自动重试";
+    elements.refreshTime.textContent = detail || "点击立即刷新重试";
   } else {
     elements.connectionLabel.textContent = "正在连接数据库";
     elements.refreshTime.textContent = detail || "等待首次同步";
@@ -374,7 +371,7 @@ function renderEmpty() {
       "",
       hasFilter
         ? "换一个关键词或清除筛选条件后再试。"
-        : "看板会持续读取数据库，任务写入新结果后会自动出现在这里。",
+        : "任务写入新结果后，点击“立即刷新”读取最新内容。",
     ),
   );
   cell.append(wrapper);
@@ -521,13 +518,13 @@ async function loadData({ initial = false, notify = false } = {}) {
         }).format(new Date())}`,
       );
     } else {
-      setConnection("loading", "每 2 秒自动检测");
+      setConnection("loading", "点击立即刷新检测");
       elements.connectionLabel.textContent = "等待数据库创建";
     }
     if (notify) showToast("已读取数据库最新内容");
   } catch (error) {
     if (error.name === "AbortError") return;
-    setConnection("offline", "2 秒后自动重试");
+    setConnection("offline", "点击立即刷新重试");
     showToast(`读取失败：${error.message}`);
     if (initial && !state.records) renderEmpty();
   } finally {
@@ -535,13 +532,6 @@ async function loadData({ initial = false, notify = false } = {}) {
       elements.loadingOverlay.hidden = true;
       elements.refreshButton.classList.remove("is-spinning");
     }
-  }
-}
-
-function schedulePolling() {
-  window.clearInterval(state.pollTimer);
-  if (!document.hidden) {
-    state.pollTimer = window.setInterval(() => loadData(), POLL_INTERVAL_MS);
   }
 }
 
@@ -636,11 +626,6 @@ elements.dialog.addEventListener("click", (event) => {
   if (event.target === elements.dialog) elements.dialog.close();
 });
 
-document.addEventListener("visibilitychange", () => {
-  schedulePolling();
-  if (!document.hidden) loadData();
-});
-
 window.addEventListener("hashchange", () => {
   selectTab(window.location.hash === "#findings" ? "findings" : "history");
 });
@@ -652,4 +637,3 @@ document.querySelectorAll(".tab").forEach((button) => {
 });
 renderHeader();
 loadData({ initial: true });
-schedulePolling();
