@@ -11,7 +11,7 @@ import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Literal
+from typing import Any, AsyncGenerator, Callable, Literal
 
 from task_agent import run_opencode_task
 
@@ -154,6 +154,13 @@ class _SummaryBuilder:
         self.security_related_commits = 0
         self.vulnerability_fix_commits = 0
         self.vulnerabilities_saved = 0
+
+    def add_discovered_commit(self, *, scheduled: bool) -> None:
+        self.total_commits += 1
+        if scheduled:
+            self.scheduled_commits += 1
+        else:
+            self.skipped_commits += 1
 
     def add_outcome(self, outcome: _CommitOutcome) -> None:
         if outcome.status == "analyzed":
@@ -454,36 +461,60 @@ class GitHistoryAnalyzer:
         self._validate_options()
 
     async def analyze(self) -> GitHistoryAnalysisSummary:
-        commit_hashes = self._list_commit_hashes()
         store = _SQLiteResultStore(self.db_path)
         store.open()
         db_lock = asyncio.Lock()
+        summary = _SummaryBuilder(
+            database_path=str(self.db_path),
+            total_commits=0,
+            scheduled_commits=0,
+        )
+        in_flight: set[asyncio.Task[_CommitOutcome]] = set()
         try:
-            scheduled = [
-                commit_hash
-                for commit_hash in commit_hashes
-                if not (
-                    self.options.skip_analyzed
-                    and store.has_completed_analysis(commit_hash)
+            commit_stream = self._iter_commit_hashes()
+            try:
+                async for commit_hash in commit_stream:
+                    already_analyzed = (
+                        self.options.skip_analyzed
+                        and store.has_completed_analysis(commit_hash)
+                    )
+                    summary.add_discovered_commit(scheduled=not already_analyzed)
+                    if already_analyzed:
+                        continue
+
+                    in_flight.add(
+                        asyncio.create_task(
+                            self._analyze_commit(commit_hash, store, db_lock)
+                        )
+                    )
+                    if len(in_flight) < self.options.concurrency:
+                        continue
+
+                    done, pending = await asyncio.wait(
+                        in_flight,
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    in_flight = set(pending)
+                    for task in done:
+                        summary.add_outcome(task.result())
+            finally:
+                await commit_stream.aclose()
+
+            while in_flight:
+                done, pending = await asyncio.wait(
+                    in_flight,
+                    return_when=asyncio.FIRST_COMPLETED,
                 )
-            ]
-            summary = _SummaryBuilder(
-                database_path=str(self.db_path),
-                total_commits=len(commit_hashes),
-                scheduled_commits=len(scheduled),
-            )
-            summary.skipped_commits = len(commit_hashes) - len(scheduled)
-            semaphore = asyncio.Semaphore(self.options.concurrency)
-            tasks = [
-                asyncio.create_task(
-                    self._analyze_commit(commit_hash, store, db_lock, semaphore)
-                )
-                for commit_hash in scheduled
-            ]
-            for task in asyncio.as_completed(tasks):
-                summary.add_outcome(await task)
+                in_flight = set(pending)
+                for task in done:
+                    summary.add_outcome(task.result())
+
             return summary.build()
         finally:
+            for task in in_flight:
+                task.cancel()
+            if in_flight:
+                await asyncio.gather(*in_flight, return_exceptions=True)
             store.close()
 
     async def _analyze_commit(
@@ -491,38 +522,36 @@ class GitHistoryAnalyzer:
         commit_hash: str,
         store: _SQLiteResultStore,
         db_lock: asyncio.Lock,
-        semaphore: asyncio.Semaphore,
     ) -> _CommitOutcome:
-        async with semaphore:
-            info: _CommitInfo | None = None
-            try:
-                payload = self._load_commit_payload(commit_hash)
-                info = payload.info
-                if payload.skip_reason:
-                    async with db_lock:
-                        store.record_skipped(payload)
-                    return _CommitOutcome(status="skipped")
+        info: _CommitInfo | None = None
+        try:
+            payload = self._load_commit_payload(commit_hash)
+            info = payload.info
+            if payload.skip_reason:
+                async with db_lock:
+                    store.record_skipped(payload)
+                return _CommitOutcome(status="skipped")
 
-                analysis = await self._run_agent_analysis(payload)
-                issues = _normalize_issues(analysis.get("issues", []))
-                async with db_lock:
-                    saved = store.record_analysis(payload, issues)
-                vulnerability_fix = bool(issues)
-                return _CommitOutcome(
-                    status="analyzed",
-                    security_related=vulnerability_fix,
-                    vulnerability_fix=vulnerability_fix,
-                    vulnerabilities_saved=saved,
-                )
-            except Exception as exc:
-                if info is None:
-                    try:
-                        info = self._get_commit_info(commit_hash)
-                    except Exception:
-                        info = None
-                async with db_lock:
-                    store.record_failure(info, commit_hash, f"{type(exc).__name__}: {exc}")
-                return _CommitOutcome(status="failed")
+            analysis = await self._run_agent_analysis(payload)
+            issues = _normalize_issues(analysis.get("issues", []))
+            async with db_lock:
+                saved = store.record_analysis(payload, issues)
+            vulnerability_fix = bool(issues)
+            return _CommitOutcome(
+                status="analyzed",
+                security_related=vulnerability_fix,
+                vulnerability_fix=vulnerability_fix,
+                vulnerabilities_saved=saved,
+            )
+        except Exception as exc:
+            if info is None:
+                try:
+                    info = self._get_commit_info(commit_hash)
+                except Exception:
+                    info = None
+            async with db_lock:
+                store.record_failure(info, commit_hash, f"{type(exc).__name__}: {exc}")
+            return _CommitOutcome(status="failed")
 
     async def _run_agent_analysis(self, payload: _CommitPayload) -> dict[str, Any]:
         schema_text = json.dumps(ANALYSIS_RESULT_SCHEMA, ensure_ascii=False, indent=2)
@@ -665,7 +694,10 @@ JSON Schema:
                 )
         return "\n\n".join(sections)
 
-    def _list_commit_hashes(self) -> list[str]:
+    async def _iter_commit_hashes(self) -> AsyncGenerator[str, None]:
+        # Keep Git's native newest-first order so rev-list can stream output.
+        # --reverse would require Git itself to retain the full walk before it
+        # can emit the first hash, defeating the bounded-memory pipeline.
         args = ["rev-list"]
         if self.options.max_commits is not None:
             args.append(f"--max-count={self.options.max_commits}")
@@ -674,9 +706,60 @@ JSON Schema:
         if self.options.until:
             args.append(f"--until={self.options.until}")
         args.append(self.options.revision_range or "HEAD")
-        commits = [line.strip() for line in self._git(args).splitlines() if line.strip()]
-        commits.reverse()
-        return commits
+        process = await asyncio.create_subprocess_exec(
+            "git",
+            *args,
+            cwd=self.repo_path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            if process.stdout is None or process.stderr is None:
+                raise RuntimeError("unable to capture git rev-list output")
+
+            while True:
+                try:
+                    raw_line = await asyncio.wait_for(
+                        process.stdout.readline(),
+                        timeout=self.options.git_timeout,
+                    )
+                except asyncio.TimeoutError as exc:
+                    raise RuntimeError(
+                        f"git {' '.join(args)} timed out after "
+                        f"{self.options.git_timeout:g} seconds"
+                    ) from exc
+                if not raw_line:
+                    break
+                commit_hash = raw_line.decode("utf-8", errors="replace").strip()
+                if commit_hash:
+                    yield commit_hash
+
+            try:
+                stderr_bytes = await asyncio.wait_for(
+                    process.stderr.read(),
+                    timeout=self.options.git_timeout,
+                )
+                returncode = await asyncio.wait_for(
+                    process.wait(),
+                    timeout=self.options.git_timeout,
+                )
+            except asyncio.TimeoutError as exc:
+                raise RuntimeError(
+                    f"git {' '.join(args)} timed out after "
+                    f"{self.options.git_timeout:g} seconds"
+                ) from exc
+            if returncode != 0:
+                stderr = " ".join(
+                    stderr_bytes.decode("utf-8", errors="replace").split()
+                )
+                raise RuntimeError(f"git {' '.join(args)} failed: {stderr}")
+        finally:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                await process.wait()
 
     def _get_commit_info(self, commit_hash: str) -> _CommitInfo:
         output = self._git(

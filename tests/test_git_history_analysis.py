@@ -42,6 +42,61 @@ def _commit(repo: Path, message: str) -> None:
 
 
 class GitHistoryAnalysisTests(unittest.TestCase):
+    def test_commit_stream_keeps_only_concurrency_sized_work_set(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q")
+
+            source = repo / "app.py"
+            source.write_text("value = 1\n", encoding="utf-8")
+            _commit(repo, "initial commit")
+
+            analyzer = analyzer_module.GitHistoryAnalyzer(
+                GitHistoryAnalysisOptions(
+                    repo_path=repo,
+                    db_path=root / "history.sqlite3",
+                    concurrency=3,
+                )
+            )
+            produced = 0
+            completed = 0
+            max_buffered = 0
+            active = 0
+            max_active = 0
+
+            async def fake_commit_stream():
+                nonlocal produced, max_buffered
+                for index in range(100):
+                    produced += 1
+                    max_buffered = max(max_buffered, produced - completed)
+                    yield f"{index:040x}"
+
+            async def fake_analyze_commit(
+                commit_hash: str,
+                store: object,
+                db_lock: object,
+            ) -> object:
+                del commit_hash, store, db_lock
+                nonlocal active, completed, max_active
+                active += 1
+                max_active = max(max_active, active)
+                await asyncio.sleep(0)
+                active -= 1
+                completed += 1
+                return analyzer_module._CommitOutcome(status="analyzed")
+
+            analyzer._iter_commit_hashes = fake_commit_stream
+            analyzer._analyze_commit = fake_analyze_commit
+            summary = asyncio.run(analyzer.analyze())
+
+            self.assertEqual(summary.total_commits, 100)
+            self.assertEqual(summary.scheduled_commits, 100)
+            self.assertEqual(summary.analyzed_commits, 100)
+            self.assertLessEqual(max_active, 3)
+            self.assertLessEqual(max_buffered, 3)
+
     def test_confirmed_vulnerability_fix_is_saved_to_sqlite(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

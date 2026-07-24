@@ -100,6 +100,10 @@ python3 main.py --help
 | `--revision-range` | `HEAD` | 传给 Git 历史审计的 revision range。 |
 | `--config-path` | 自动发现 | Task Agent YAML 路径。未指定时依次读取 `TASK_AGENT_CONFIG` 和当前目录的 `task-agent.yaml`。 |
 
+历史审计会逐条读取 commit，并且任何时刻最多只保留
+`--history-concurrency` 个处理任务；不会为整个仓库一次性创建任务。
+超大仓库如需严格逐个处理，可设置 `--history-concurrency 1`。
+
 例如：
 
 ```bash
