@@ -280,6 +280,16 @@ class DashboardStoreTests(unittest.TestCase):
 
 
 class DashboardHTTPTests(unittest.TestCase):
+    def test_loading_overlay_honors_hidden_attribute(self) -> None:
+        stylesheet = (
+            Path(__file__).resolve().parents[1] / "web" / "styles.css"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn(
+            ".loading-overlay[hidden] {\n  display: none;\n}",
+            stylesheet,
+        )
+
     def test_static_frontend_and_json_api_are_served(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             db_path = Path(temp_dir) / "mirrorsec.sqlite3"

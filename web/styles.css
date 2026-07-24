@@ -923,6 +923,10 @@ tbody tr.data-row:hover {
   font-size: 11px;
 }
 
+.loading-overlay[hidden] {
+  display: none;
+}
+
 .spinner {
   width: 17px;
   height: 17px;
