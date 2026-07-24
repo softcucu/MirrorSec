@@ -87,6 +87,42 @@ python3 main.py \
 python3 main.py --help
 ```
 
+## 实时 Web 看板
+
+Web 看板是独立的只读进程，不会启动、停止或修改审计任务。分析任务运行时，
+另开一个终端并让看板读取同一个 SQLite 文件：
+
+```bash
+python3 web_dashboard.py \
+  --db /absolute/path/to/mirrorsec.sqlite3
+```
+
+浏览器访问：
+
+```text
+http://127.0.0.1:8765
+```
+
+页面每 2 秒读取一次最新数据，包含两个表格页签：
+
+- `Git 历史问题`：显示 `vulnerabilities` 中从历史修复提交确认的问题。
+- `问题排查结果`：显示 `similar_issue_findings` 中在当前代码确认的同类问题。
+
+看板支持关键词搜索、严重性筛选、分页和完整详情查看。数据库尚未创建或任务
+暂未写入结果时，页面会保持等待状态并继续自动刷新。
+
+自定义监听地址和端口：
+
+```bash
+python3 web_dashboard.py \
+  --db /absolute/path/to/mirrorsec.sqlite3 \
+  --host 0.0.0.0 \
+  --port 9000
+```
+
+看板没有内置身份认证。使用 `0.0.0.0` 对外提供访问时，应通过防火墙或反向
+代理限制访问范围。
+
 ## 命令行参数
 
 | 参数 | 是否必填/默认值 | 说明 |

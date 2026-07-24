@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light">
+    <meta
+      name="description"
+      content="MirrorSec Git 历史安全问题与同类问题排查实时看板"
+    >
+    <title>MirrorSec · 实时审计看板</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <a class="brand" href="/" aria-label="MirrorSec 首页">
+          <span class="brand-mark" aria-hidden="true">
+            <svg viewBox="0 0 36 36" role="img">
+              <path d="M18 3.5 30 8v8.6c0 7.2-4.8 13.5-12 15.9-7.2-2.4-12-8.7-12-15.9V8l12-4.5Z"/>
+              <path d="m12 18 4 4 8-9"/>
+            </svg>
+          </span>
+          <span class="brand-copy">
+            <strong>MirrorSec</strong>
+            <small>镜鉴</small>
+          </span>
+        </a>
+
+        <div class="sidebar-context">
+          <span class="eyebrow">SECURITY AUDIT</span>
+          <p>从历史修复中发现当下仍然存在的风险。</p>
+        </div>
+
+        <div class="sidebar-foot">
+          <span class="live-dot" aria-hidden="true"></span>
+          <div>
+            <strong>只读模式</strong>
+            <span>不会修改分析数据库</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">LIVE AUDIT CONSOLE</p>
+            <h1>安全审计结果</h1>
+          </div>
+          <div class="topbar-actions">
+            <div class="connection" id="connection" data-state="loading">
+              <span class="connection-dot" aria-hidden="true"></span>
+              <div>
+                <strong id="connection-label">正在连接数据库</strong>
+                <span id="refresh-time">等待首次同步</span>
+              </div>
+            </div>
+            <button class="icon-button" id="refresh-button" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M20 11a8 8 0 1 0-2.34 5.66M20 4v7h-7"/>
+              </svg>
+              <span>立即刷新</span>
+            </button>
+          </div>
+        </header>
+
+        <section class="database-strip" aria-label="当前数据库">
+          <div class="database-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <ellipse cx="12" cy="5" rx="8" ry="3"/>
+              <path d="M4 5v7c0 1.66 3.58 3 8 3s8-1.34 8-3V5"/>
+              <path d="M4 12v7c0 1.66 3.58 3 8 3s8-1.34 8-3v-7"/>
+            </svg>
+          </div>
+          <div class="database-copy">
+            <span>数据源</span>
+            <strong id="database-name">等待数据库信息…</strong>
+          </div>
+          <code id="database-path"></code>
+          <div class="database-meta" id="database-meta">—</div>
+        </section>
+
+        <section class="stats" id="stats" aria-label="审计统计"></section>
+
+        <section class="results-panel">
+          <div class="tabs" role="tablist" aria-label="结果类型">
+            <button
+              class="tab is-active"
+              id="history-tab"
+              type="button"
+              role="tab"
+              aria-selected="true"
+              aria-controls="results-view"
+              data-tab="history"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="12" cy="12" r="9"/>
+                <path d="M12 7v5l3 2M3 12H1m22 0h-2"/>
+              </svg>
+              Git 历史问题
+              <span class="tab-count" id="history-count">0</span>
+            </button>
+            <button
+              class="tab"
+              id="findings-tab"
+              type="button"
+              role="tab"
+              aria-selected="false"
+              aria-controls="results-view"
+              data-tab="findings"
+            >
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="m12 3 9 16H3L12 3Z"/>
+                <path d="M12 9v4m0 3h.01"/>
+              </svg>
+              问题排查结果
+              <span class="tab-count tab-count-alert" id="findings-count">0</span>
+            </button>
+          </div>
+
+          <div class="panel-toolbar">
+            <div class="result-heading">
+              <h2 id="table-title">Git 历史安全问题</h2>
+              <p id="table-subtitle">从修复提交中确认的历史漏洞</p>
+            </div>
+            <div class="filters">
+              <label class="search-box">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <circle cx="11" cy="11" r="7"/>
+                  <path d="m20 20-4-4"/>
+                </svg>
+                <span class="sr-only">搜索当前表格</span>
+                <input
+                  id="search-input"
+                  type="search"
+                  autocomplete="off"
+                  placeholder="搜索问题、提交或根因"
+                >
+              </label>
+              <label class="select-wrap is-hidden" id="severity-wrap">
+                <span class="sr-only">按严重性筛选</span>
+                <select id="severity-select">
+                  <option value="">全部级别</option>
+                  <option value="critical">严重</option>
+                  <option value="high">高危</option>
+                  <option value="medium">中危</option>
+                  <option value="low">低危</option>
+                  <option value="info">提示</option>
+                </select>
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m8 10 4 4 4-4"/>
+                </svg>
+              </label>
+            </div>
+          </div>
+
+          <div
+            class="table-wrap"
+            id="results-view"
+            role="tabpanel"
+            aria-labelledby="history-tab"
+          >
+            <table>
+              <thead id="table-head"></thead>
+              <tbody id="table-body"></tbody>
+            </table>
+            <div class="loading-overlay" id="loading-overlay" hidden>
+              <span class="spinner" aria-hidden="true"></span>
+              <span>正在读取最新数据…</span>
+            </div>
+          </div>
+
+          <footer class="table-footer">
+            <div class="page-summary" id="page-summary">共 0 条记录</div>
+            <div class="pagination">
+              <label class="page-size">
+                每页
+                <select id="page-size">
+                  <option value="10">10</option>
+                  <option value="20" selected>20</option>
+                  <option value="50">50</option>
+                </select>
+                条
+              </label>
+              <button id="previous-page" type="button" aria-label="上一页">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m15 18-6-6 6-6"/>
+                </svg>
+              </button>
+              <span id="page-indicator">1 / 1</span>
+              <button id="next-page" type="button" aria-label="下一页">
+                <svg viewBox="0 0 24 24" aria-hidden="true">
+                  <path d="m9 18 6-6-6-6"/>
+                </svg>
+              </button>
+            </div>
+          </footer>
+        </section>
+      </main>
+    </div>
+
+    <dialog class="detail-dialog" id="detail-dialog">
+      <div class="dialog-topbar">
+        <div>
+          <p class="eyebrow" id="dialog-eyebrow">ISSUE DETAIL</p>
+          <h2 id="dialog-title">问题详情</h2>
+        </div>
+        <button class="dialog-close" id="dialog-close" type="button" aria-label="关闭">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="dialog-content" id="dialog-content"></div>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="/app.js" defer></script>
+  </body>
+</html>
