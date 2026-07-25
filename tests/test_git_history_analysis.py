@@ -137,8 +137,15 @@ class GitHistoryAnalysisTests(unittest.TestCase):
                 self.assertEqual(kwargs["task_type"], "git_history")
                 self.assertEqual(kwargs["required_capability"], "high")
                 self.assertIn("run_opencode_task", analyzer_module.__dict__)
-                self.assertIn("修复前", str(kwargs["prompt"]))
-                self.assertIn("完整因果链", str(kwargs["prompt"]))
+                prompt = str(kwargs["prompt"])
+                self.assertIn("修复前", prompt)
+                self.assertIn("完整因果链", prompt)
+                self.assertIn("git show --stat --summary", prompt)
+                self.assertIn("git diff --unified=8", prompt)
+                self.assertIn("git diff-tree", prompt)
+                self.assertNotIn("SELECT * FROM users", prompt)
+                self.assertNotIn("read_export(base_dir, filename)", prompt)
+                self.assertLess(len(prompt), 10_000)
                 schema = kwargs["output_schema"]
                 self.assertEqual(set(schema["properties"]), {"issues"})
                 issue_schema = schema["properties"]["issues"]["items"]
@@ -225,6 +232,12 @@ class GitHistoryAnalysisTests(unittest.TestCase):
                 raw_result = connection.execute(
                     "SELECT raw_result_json FROM analyzed_commits"
                 ).fetchone()[0]
+                truncation_flags = connection.execute(
+                    """
+                    SELECT patch_truncated, original_code_truncated
+                    FROM analyzed_commits
+                    """
+                ).fetchone()
             finally:
                 connection.close()
             self.assertEqual([row[0] for row in rows], [1, 2])
@@ -247,6 +260,55 @@ class GitHistoryAnalysisTests(unittest.TestCase):
                 set(json.loads(raw_result)),
                 {"issues"},
             )
+            self.assertEqual(truncation_flags, (0, 0))
+
+    def test_commit_message_is_bounded_in_lightweight_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            repo = root / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q")
+
+            source = repo / "app.py"
+            source.write_text("value = 1\n", encoding="utf-8")
+            _commit(repo, "initial commit")
+            source.write_text("value = 2\n", encoding="utf-8")
+            long_body = "untrusted metadata " * 1_000
+            _git(repo, "add", ".")
+            _git(
+                repo,
+                "-c",
+                "user.name=Tester",
+                "-c",
+                "user.email=tester@example.com",
+                "-c",
+                "commit.gpgsign=false",
+                "commit",
+                "--no-verify",
+                "-m",
+                "update value",
+                "-m",
+                long_body,
+            )
+
+            analyzer = analyzer_module.GitHistoryAnalyzer(
+                GitHistoryAnalysisOptions(
+                    repo_path=repo,
+                    db_path=root / "history.sqlite3",
+                )
+            )
+            commit_hash = analyzer._git(["rev-parse", "HEAD"]).strip()
+            payload = analyzer._load_commit_payload(commit_hash)
+            schema_text = json.dumps(
+                analyzer_module.ANALYSIS_RESULT_SCHEMA,
+                ensure_ascii=False,
+                indent=2,
+            )
+            prompt = analyzer._build_prompt(payload, schema_text)
+
+            self.assertIn("[commit metadata truncated]", prompt)
+            self.assertNotIn(long_body, prompt)
+            self.assertLess(len(prompt), 10_000)
 
 
 if __name__ == "__main__":

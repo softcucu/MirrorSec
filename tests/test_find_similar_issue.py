@@ -15,7 +15,7 @@ from find_similar_issue import (
 
 
 class FindSimilarIssueTests(unittest.TestCase):
-    def test_two_step_hunt_discovers_locations_then_audits_them(self) -> None:
+    def test_two_step_hunt_generates_prompt_then_directly_audits(self) -> None:
         known_issue = {
             "description": "下载接口允许攻击者读取基础目录之外的文件。",
             "root_cause": (
@@ -24,89 +24,94 @@ class FindSimilarIssueTests(unittest.TestCase):
             ),
             "original_code": "return (base_dir / path).read_bytes()",
         }
-        candidates = [
-            {"code_location": "api/export.py:40-42"},
-            {"code_location": "api/import.py:8,12-15,19"},
-        ]
+        investigation_prompt = (
+            "检索用户可控路径进入文件读取的位置；确认规范化后的路径是否"
+            "被可靠限制在预期基础目录内，并验证攻击路径是否可达。"
+        )
         calls: list[dict[str, object]] = []
-        active_validations = 0
-        max_active_validations = 0
 
         async def fake_run_opencode_task(**kwargs: object) -> object:
-            nonlocal active_validations, max_active_validations
             calls.append(kwargs)
             self.assertEqual(kwargs["task_type"], "variant_hunt")
             self.assertEqual(kwargs["required_capability"], "high")
             self.assertIn("run_opencode_task", similar_module.__dict__)
 
             task_name = str(kwargs["task_name"])
-            if task_name == "similar issue candidate discovery":
+            if task_name == "similar issue method generation":
                 prompt = str(kwargs["prompt"])
-                self.assertIn("历史漏洞描述", prompt)
+                self.assertIn("历史问题描述", prompt)
                 self.assertIn(known_issue["description"], prompt)
-                self.assertIn("历史漏洞根因", prompt)
+                self.assertIn("历史问题根因分析", prompt)
                 self.assertIn(known_issue["root_cause"], prompt)
-                self.assertIn("历史漏洞代码", prompt)
+                self.assertIn("历史问题代码", prompt)
                 self.assertIn(known_issue["original_code"], prompt)
-                self.assertIn("不负责确认候选是否真实存在漏洞", prompt)
-                self.assertIn("允许误报", prompt)
-                self.assertIn("path/to/file.py:42-57", prompt)
-                self.assertIn("path/to/file.py:42,48-53,61", prompt)
-                schema = kwargs["output_schema"]
-                item_schema = schema["properties"]["candidates"]["items"]
+                self.assertIn("一个完整、自包含、可执行", prompt)
                 self.assertEqual(
-                    set(item_schema["properties"]),
-                    {"code_location"},
+                    set(kwargs["output_schema"]["properties"]),
+                    {"investigation_prompt"},
                 )
                 return SimpleNamespace(
                     status="success",
-                    structured={"candidates": candidates},
+                    structured={"investigation_prompt": investigation_prompt},
                 )
 
-            active_validations += 1
-            max_active_validations = max(max_active_validations, active_validations)
-            try:
-                await asyncio.sleep(0.01)
-            finally:
-                active_validations -= 1
-
-            code_location = (
-                "api/export.py:40-42"
-                if "api/export.py" in task_name
-                else "api/import.py:8,12-15,19"
-            )
+            self.assertEqual(task_name, "similar issues audit")
             prompt = str(kwargs["prompt"])
-            self.assertIn(known_issue["description"], prompt)
-            self.assertIn(known_issue["root_cause"], prompt)
-            self.assertIn(known_issue["original_code"], prompt)
-            self.assertIn(code_location, prompt)
-            exists = code_location == "api/export.py:40-42"
+            self.assertIn("审计提示词", prompt)
+            self.assertIn(investigation_prompt, prompt)
+            self.assertNotIn(known_issue["description"], prompt)
+            self.assertNotIn(known_issue["original_code"], prompt)
+            self.assertIn("直接完成同类问题排查", prompt)
+            self.assertIn("不要输出中间疑似位置", prompt)
+            schema = kwargs["output_schema"]
+            finding_schema = schema["properties"]["findings"]["items"]
+            self.assertEqual(
+                set(finding_schema["properties"]),
+                {
+                    "code_location",
+                    "similar_issue_exists",
+                    "severity",
+                    "title",
+                    "root_cause",
+                    "evidence",
+                    "attack_path",
+                    "similarity_analysis",
+                    "difference_analysis",
+                    "recommendation",
+                    "confidence",
+                },
+            )
             return SimpleNamespace(
                 status="success",
                 structured={
-                    "code_location": code_location,
-                    "similar_issue_exists": exists,
-                    "severity": "high" if exists else "none",
-                    "title": "导出路径穿越" if exists else "",
-                    "root_cause": (
-                        "用户可控 filename 直接参与路径拼接。"
-                        if exists
-                        else ""
-                    ),
-                    "evidence": (
-                        "api/export.py:40-42 将 filename 拼接后读取。"
-                        if exists
-                        else "api/import.py:8,12-15,19 已执行目录边界检查。"
-                    ),
-                    "attack_path": "HTTP filename 参数到文件读取。" if exists else "",
-                    "similarity_analysis": (
-                        "输入、危险操作和缺失边界检查均相似。"
-                        if exists
-                        else ""
-                    ),
-                    "difference_analysis": "" if exists else "存在有效边界检查。",
-                    "recommendation": "规范化路径并检查目录边界。" if exists else "",
-                    "confidence": "high",
+                    "findings": [
+                        {
+                            "code_location": "api/export.py:40-42",
+                            "similar_issue_exists": True,
+                            "severity": "high",
+                            "title": "导出路径穿越",
+                            "root_cause": "用户可控 filename 直接参与路径拼接。",
+                            "evidence": "api/export.py:40-42 将 filename 拼接后读取。",
+                            "attack_path": "HTTP filename 参数到文件读取。",
+                            "similarity_analysis": "输入、危险操作和缺失边界检查均相似。",
+                            "difference_analysis": "使用不同的文件读取 API。",
+                            "recommendation": "规范化路径并检查目录边界。",
+                            "confidence": "high",
+                        },
+                        {
+                            "code_location": "api/archive.py:8,12-15,19",
+                            "similar_issue_exists": True,
+                            "severity": "medium",
+                            "title": "归档路径穿越",
+                            "root_cause": "归档条目路径未经目录边界检查。",
+                            "evidence": "api/archive.py:8,12-15,19 写入任意条目路径。",
+                            "attack_path": "上传归档文件到文件写入。",
+                            "similarity_analysis": "缺失的目录边界约束相同。",
+                            "difference_analysis": "危险操作是文件写入。",
+                            "recommendation": "校验归档条目的规范化目标路径。",
+                            "confidence": "high",
+                        },
+                    ]
                 },
             )
 
@@ -115,43 +120,50 @@ class FindSimilarIssueTests(unittest.TestCase):
         try:
             result = asyncio.run(
                 find_similar_issue(
-                    FindSimilarIssueOptions(
-                        known_issue=known_issue,
-                        concurrency=2,
-                    )
+                    FindSimilarIssueOptions(known_issue=known_issue)
                 )
             )
         finally:
             similar_module.run_opencode_task = original_runner
 
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 2)
         self.assertEqual(
-            [candidate.code_location for candidate in result.candidates],
-            ["api/export.py:40-42", "api/import.py:8,12-15,19"],
+            [call["task_name"] for call in calls],
+            ["similar issue method generation", "similar issues audit"],
         )
         self.assertEqual(len(result.findings), 2)
         self.assertEqual(result.findings[0].code_location, "api/export.py:40-42")
         self.assertTrue(result.findings[0].similar_issue_exists)
-        self.assertEqual(result.findings[1].severity, "none")
-        self.assertEqual(max_active_validations, 2)
+        self.assertEqual(result.findings[1].severity, "medium")
         self.assertEqual(
             set(result.to_dict()),
-            {"candidates", "findings"},
+            {"findings"},
         )
 
-    def test_empty_candidate_list_skips_validation_step(self) -> None:
+    def test_direct_audit_can_return_no_findings(self) -> None:
         calls: list[dict[str, object]] = []
 
         async def fake_run_opencode_task(**kwargs: object) -> object:
             calls.append(kwargs)
+            if kwargs["task_name"] == "similar issue method generation":
+                self.assertIn("已知 SQL 注入问题", str(kwargs["prompt"]))
+                return SimpleNamespace(
+                    status="success",
+                    structured={
+                        "investigation_prompt": "排查输入进入 SQL 执行且未参数化的位置。"
+                    },
+                )
             self.assertEqual(
                 kwargs["task_name"],
-                "similar issue candidate discovery",
+                "similar issues audit",
             )
-            self.assertIn("已知 SQL 注入问题", str(kwargs["prompt"]))
+            self.assertIn(
+                "排查输入进入 SQL 执行且未参数化的位置。",
+                str(kwargs["prompt"]),
+            )
             return SimpleNamespace(
                 status="success",
-                structured={"candidates": []},
+                structured={"findings": []},
             )
 
         original_runner = similar_module.run_opencode_task
@@ -161,29 +173,47 @@ class FindSimilarIssueTests(unittest.TestCase):
         finally:
             similar_module.run_opencode_task = original_runner
 
-        self.assertEqual(len(calls), 1)
-        self.assertEqual(result.candidates, [])
+        self.assertEqual(len(calls), 2)
         self.assertEqual(result.findings, [])
 
-    def test_candidate_locations_are_normalized_deduplicated_and_limited(self) -> None:
-        candidates = similar_module._normalize_candidates(
+    def test_generated_investigation_prompt_must_not_be_empty(self) -> None:
+        with self.assertRaisesRegex(ValueError, "investigation_prompt"):
+            similar_module._normalize_investigation_prompt(
+                {"investigation_prompt": " "}
+            )
+
+    def test_direct_findings_are_filtered_normalized_and_deduplicated(self) -> None:
+        base_finding = {
+            "similar_issue_exists": True,
+            "severity": "high",
+            "title": "路径穿越",
+            "root_cause": "缺少目录边界检查。",
+            "evidence": "具体代码证据。",
+            "attack_path": "外部输入到文件读取。",
+            "similarity_analysis": "根因相同。",
+            "difference_analysis": "",
+            "recommendation": "增加边界检查。",
+            "confidence": "high",
+        }
+        findings = similar_module._normalize_findings(
             [
-                {"code_location": " src/a.py:12 "},
-                {"code_location": "src/a.py:12"},
-                {"code_location": "src/b.py:20 - 25, 31,31"},
-                {"code_location": "src/c.py:0"},
-                {"code_location": "src/d.py:30-20"},
-                {"code_location": "src/e.py:not-a-line"},
-                {"code_location": "src/f.py:50,52-54"},
-            ],
-            max_candidates=3,
+                {**base_finding, "code_location": " src/a.py:12 "},
+                {**base_finding, "code_location": "src/a.py:12"},
+                {
+                    **base_finding,
+                    "code_location": "src/safe.py:20",
+                    "similar_issue_exists": False,
+                },
+                {**base_finding, "code_location": "src/c.py:0"},
+                {**base_finding, "code_location": "src/d.py:30-20"},
+                {**base_finding, "code_location": "src/f.py:50,52-54"},
+            ]
         )
 
         self.assertEqual(
-            [candidate.code_location for candidate in candidates],
+            [finding.code_location for finding in findings],
             [
                 "src/a.py:12",
-                "src/b.py:20-25,31",
                 "src/f.py:50,52-54",
             ],
         )
@@ -212,7 +242,7 @@ class FindSimilarIssueTests(unittest.TestCase):
             evidence="存在有效目录边界检查。",
             attack_path="",
             similarity_analysis="",
-            difference_analysis="候选已实施有效安全控制。",
+            difference_analysis="该位置已实施有效安全控制。",
             recommendation="",
             confidence="high",
         )
@@ -224,7 +254,6 @@ class FindSimilarIssueTests(unittest.TestCase):
             received["known_issue"] = known_issue
             received["overrides"] = overrides
             return FindSimilarIssueResult(
-                candidates=[],
                 findings=[confirmed, rejected],
             )
 

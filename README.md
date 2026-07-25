@@ -5,7 +5,7 @@ MirrorSec（镜鉴）用于从 Git 历史提交中识别已经修复的安全问
 主程序会同时运行两条任务：
 
 1. Git 历史审计：分析提交及其修复前代码，将确认的历史安全问题写入 SQLite。
-2. 同类问题排查：持续从同一个 SQLite 数据库领取尚未排查的历史问题，先发现候选位置，再并发审计候选点，并保存确认的漏洞。
+2. 同类问题排查：持续从同一个 SQLite 数据库领取尚未排查的历史问题，先根据问题描述、根因和代码生成一个专用审计提示词，再用该提示词直接完成目标代码排查，并保存确认的漏洞。
 
 同类问题排查只有在数据库中存在未成功排查的历史问题时才会调用模型。历史审计运行期间新写入的问题也会在本次运行中继续被领取。
 
@@ -132,7 +132,7 @@ python3 web_dashboard.py \
 | `--db` | `git_history_analysis.sqlite3` | SQLite 数据库路径。历史审计产物、同类问题排查状态和确认漏洞都存入该数据库。 |
 | `--history-concurrency` | `4` | 同时分析的 Git commit 数量。 |
 | `--history-capability` | `medium` | Git 历史审计要求的最低模型能力，可选 `low`、`medium`、`high`。 |
-| `--similar-concurrency` | `4` | 同类问题排查的全局模型任务并发上限，覆盖所有历史问题的候选发现和候选点审计。 |
+| `--similar-concurrency` | `4` | 同类问题排查的全局模型任务并发上限，覆盖审计提示词生成和最终审计。 |
 | `--similar-capability` | `high` | 同类问题排查要求的最低模型能力，可选 `low`、`medium`、`high`。 |
 | `--revision-range` | `HEAD` | 传给 Git 历史审计的 revision range。 |
 | `--config-path` | 自动发现 | Task Agent YAML 路径。未指定时依次读取 `TASK_AGENT_CONFIG` 和当前目录的 `task-agent.yaml`。 |
@@ -141,13 +141,17 @@ python3 web_dashboard.py \
 `--history-concurrency` 个处理任务；不会为整个仓库一次性创建任务。
 超大仓库如需严格逐个处理，可设置 `--history-concurrency 1`。
 
+每个历史任务只把 commit 元数据发送给 agent，不会预先把完整 diff 和父版本
+代码拼进 prompt。agent 会先读取提交统计，再按可疑文件和必要 hunk 逐步取证；
+确认后的问题描述、根因和修复前代码仍按原有 SQLite 结构保存。
+
 例如：
 
 ```bash
 --similar-concurrency 8
 ```
 
-表示所有同类问题排查任务合计最多同时执行 8 个模型调用。即使数据库中同时存在多个待排查历史问题，它们的候选发现和候选审计也共享这个全局上限。
+表示所有同类问题排查任务合计最多同时执行 8 个模型调用。即使数据库中同时存在多个待排查历史问题，它们的审计提示词生成和最终审计也共享这个全局上限。
 
 ## 运行进度
 

@@ -143,8 +143,8 @@ def _build_parser() -> argparse.ArgumentParser:
         type=int,
         default=4,
         help=(
-            "同类问题排查的全局模型任务并发上限，覆盖候选发现和所有"
-            "候选点审计，默认 4。"
+            "同类问题排查的全局模型任务并发上限，覆盖排查方法提示词生成、"
+            "最终审计，默认 4。"
         ),
     )
     parser.add_argument(
@@ -684,15 +684,7 @@ def _use_requested_model_capabilities(
 ) -> Iterator[None]:
     original_history_runner = git_history_module.run_opencode_task
     original_similar_runner = similar_issue_module.run_opencode_task
-    original_find_similar_issue = similar_issue_module.find_similar_issue
     similar_limiter = asyncio.Semaphore(similar_concurrency)
-
-    async def find_similar_issue_with_concurrency(
-        known_issue: Any,
-        **overrides: Any,
-    ) -> Any:
-        overrides["concurrency"] = similar_concurrency
-        return await original_find_similar_issue(known_issue, **overrides)
 
     git_history_module.run_opencode_task = _make_capability_task_runner(
         history_capability
@@ -701,13 +693,11 @@ def _use_requested_model_capabilities(
         similar_capability,
         concurrency_limiter=similar_limiter,
     )
-    similar_issue_module.find_similar_issue = find_similar_issue_with_concurrency
     try:
         yield
     finally:
         git_history_module.run_opencode_task = original_history_runner
         similar_issue_module.run_opencode_task = original_similar_runner
-        similar_issue_module.find_similar_issue = original_find_similar_issue
 
 
 async def _run_history_analysis(

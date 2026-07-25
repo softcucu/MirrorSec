@@ -59,13 +59,19 @@ def _build_parser() -> argparse.ArgumentParser:
         "--max-patch-chars",
         type=int,
         default=120_000,
-        help="单个 commit diff 传给模型的最大字符数。",
+        help=(
+            "兼容旧版本的保留参数；轻量模式由 agent 按需读取 diff，"
+            "不再预装 patch。"
+        ),
     )
     parser.add_argument(
         "--max-original-code-chars",
         type=int,
         default=60_000,
-        help="父版本原始代码片段传给模型的最大字符数。",
+        help=(
+            "兼容旧版本的保留参数；轻量模式由 agent 按需读取父版本代码，"
+            "不再预装代码片段。"
+        ),
     )
     return parser
 
